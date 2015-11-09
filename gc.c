@@ -1,5 +1,7 @@
+/* gcc gc.c -O2 -Wall -Wextra -lm -o gc && ./gc */
 #define INITIAL_ARRAY_SIZE 16
 #define STACK_SIZE 256
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -172,7 +174,8 @@ void set_element(struct Object *array, int index, struct Object *element)
 }
 
 /*
- * Functions that print objects in a human readable form.
+ * Functions that print objects in a human readable form. Pairs are printed in a
+ * lisp-like fashion.
  */
 void print_array(struct Object *);
 void print_object(struct Object *);
@@ -250,6 +253,11 @@ struct Object *pop(void)
 {
     stack_length--;
     return stack[stack_length];
+}
+
+struct Object *peek(void)
+{
+    return stack[stack_length - 1];
 }
 
 /*
@@ -360,30 +368,215 @@ void stop_the_world_mark_and_sweep(void)
 }
 
 /*
- * In the main function we will push and pop some objects on the stack. This is
- * essentially what a virtual machine does during runtime. After a couple of
- * stack operations we call the garbage collector.
+ * Now let's implement a simple stack-oriented language with the following
+ * features:
+ * - literal numbers are pushed onto the stack.
+ * - "add", "sub", "mul", "div" and "mod" pop two operands from the stack,
+ *   perform an arithmetic operation and push the result onto the stack.
+ * - "pop" pops a value from the stack.
+ * - "print" prints the top of the stack without popping it.
+ * - "null" pushes a null pointer onto the stack.
+ * - "cons" pops two values from the stack, constructs a pair and pushes it onto
+ *   the stack.
+ *
+ * This language lacks support for strings and arrays even though our type
+ * system includes them, but you can always expand the language if you like.
+ */
+enum TokenType
+{
+    ADD_TOKEN,
+    CONS_TOKEN,
+    DIV_TOKEN,
+    END_TOKEN,
+    MOD_TOKEN,
+    MUL_TOKEN,
+    NULL_TOKEN,
+    NUMBER_TOKEN,
+    POP_TOKEN,
+    PRINT_TOKEN,
+    SUB_TOKEN
+};
+
+struct Token
+{
+    enum TokenType type;
+    struct Object *value;
+};
+
+char code[] = "1 2 add 3 mul print pop 1 2 3 null cons cons cons print";
+char *to = code;
+char *from;
+
+/*
+ * This implementation lacks checks to handle syntax and runtime errors because
+ * it is only a demonstration. Of course a real language should have such
+ * checks.
+ */
+struct Token next_token(void)
+{
+    struct Token token;
+    char substring[256];
+    from = to;
+    if (*to == '\0')
+    {
+        token.type = END_TOKEN;
+    }
+    else if ((*to >= '\t' && *to <= '\r') || *to == ' ')
+    {
+        to++;
+        while ((*to >= '\t' && *to <= '\r') || *to == ' ')
+        {
+            to++;
+        }
+        return next_token();
+    }
+    else if (*to == '+' || *to == '-' || (*to >= '0' && *to <= '9'))
+    {
+        to++;
+        while (*to >= '0' && *to <= '9')
+        {
+            to++;
+        }
+        if (*to == '.')
+        {
+            to++;
+            while (*to >= '0' && *to <= '9')
+            {
+                to++;
+            }
+        }
+        if (*to == 'E' || *to == 'e')
+        {
+            to++;
+            if (*to == '+' || *to == '-')
+            {
+                to++;
+            }
+            while (*to >= '0' && *to <= '9')
+            {
+                to++;
+            }
+        }
+        strncpy(substring, from, to - from);
+        substring[to - from] = '\0';
+        token.type = NUMBER_TOKEN;
+        token.value = new_number(atof(substring));
+    }
+    else if (*to >= 'a' && *to <= 'z')
+    {
+        to++;
+        while (*to >= 'a' && *to <= 'z')
+        {
+            to++;
+        }
+        strncpy(substring, from, to - from);
+        substring[to - from] = '\0';
+        if (strcmp(substring, "add") == 0)
+        {
+            token.type = ADD_TOKEN;
+        }
+        else if (strcmp(substring, "cons") == 0)
+        {
+            token.type = CONS_TOKEN;
+        }
+        else if (strcmp(substring, "div") == 0)
+        {
+            token.type = DIV_TOKEN;
+        }
+        else if (strcmp(substring, "mod") == 0)
+        {
+            token.type = MOD_TOKEN;
+        }
+        else if (strcmp(substring, "mul") == 0)
+        {
+            token.type = MUL_TOKEN;
+        }
+        else if (strcmp(substring, "null") == 0)
+        {
+            token.type = NULL_TOKEN;
+        }
+        else if (strcmp(substring, "pop") == 0)
+        {
+            token.type = POP_TOKEN;
+        }
+        else if (strcmp(substring, "print") == 0)
+        {
+            token.type = PRINT_TOKEN;
+        }
+        else if (strcmp(substring, "sub") == 0)
+        {
+            token.type = SUB_TOKEN;
+        }
+    }
+    return token;
+}
+
+void interpret(void)
+{
+    struct Token token;
+    struct Object *operand1;
+    struct Object *operand2;
+    while (1)
+    {
+        token = next_token();
+        switch (token.type)
+        {
+            case ADD_TOKEN:
+                operand2 = pop();
+                operand1 = pop();
+                push(new_number(operand1->number + operand2->number));
+                break;
+            case CONS_TOKEN:
+                operand2 = pop();
+                operand1 = pop();
+                push(new_pair(operand1, operand2));
+                break;
+            case DIV_TOKEN:
+                operand2 = pop();
+                operand1 = pop();
+                push(new_number(operand1->number / operand2->number));
+                break;
+            case END_TOKEN:
+                return;
+            case MOD_TOKEN:
+                operand2 = pop();
+                operand1 = pop();
+                push(new_number(fmod(operand1->number, operand2->number)));
+                break;
+            case MUL_TOKEN:
+                operand2 = pop();
+                operand1 = pop();
+                push(new_number(operand1->number * operand2->number));
+                break;
+            case NULL_TOKEN:
+                push(NULL);
+                break;
+            case NUMBER_TOKEN:
+                push(token.value);
+                break;
+            case POP_TOKEN:
+                pop();
+                break;
+            case PRINT_TOKEN:
+                print_object(peek());
+                putchar('\n');
+                break;
+            case SUB_TOKEN:
+                operand2 = pop();
+                operand1 = pop();
+                push(new_number(operand1->number - operand2->number));
+                break;
+        }
+    }
+}
+
+/*
+ * And we are done. Let's start the interpreter and then our garbage collector.
  */
 int main(void)
 {
-    int i;
-    struct Object *array = new_array();;
-    push(new_pair(new_number(1), new_pair(new_number(2), new_pair(new_number(3), NULL))));
-    push(new_number(4));
-    push(new_pair(new_number(5), new_pair(new_number(6), new_pair(new_number(7), NULL))));
-    pop();
-    pop();
-    push(new_number(8));
-    push(new_string("hello"));
-    push(new_string("world"));
-    pop();
-    for (i = 10; i <= 30; i += 10)
-    {
-        append_element(array, new_number(i));
-    }
-    set_element(array, 1, NULL);
-    push(array);
-    push(NULL);
+    interpret();
+    putchar('\n');
     stop_the_world_mark_and_sweep();
     return 0;
 }
